@@ -1,4 +1,5 @@
 import torch
+import torchvision
 import data
 from data import CELL_TYPES
 import os
@@ -7,12 +8,11 @@ import random
 from sys import stderr
 from hyper import parser
 import datetime
-import copy
 import time
 import sklearn.metrics as metrics
 import torch.nn
-from torchvision.models import efficientnet_b0,efficientnet_b7
-from torch.utils.tensorboard import SummaryWriter
+# import mlflow
+from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 
 
 def forward_data(data_loader,mode,model,optimizer,criterion,device):
@@ -24,69 +24,76 @@ def forward_data(data_loader,mode,model,optimizer,criterion,device):
     elif mode in {"val","test"}:
         model.eval()
 
-    cumulative_loss = 0
+    cumulative_loss = 0.0
 
     y_pred = None
     y_true = None
 
-
-    for index,(ids,images,labels_cpu) in enumerate(data_loader):
+    for index,(ids,inputs,labels) in enumerate(data_loader):
         
         # Forward Pass
-        outputs = model(images.to(device))
+        labels = labels.to(device).float()
+        inputs = inputs.to(device)
 
-        loss = criterion(outputs, labels_cpu.to(device).float())
-        cumulative_loss += loss.item() * labels_cpu.size(0)
+        optimizer.zero_grad()
 
-
-        if mode == "train":
-            # Backpropagation
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
+        with torch.set_grad_enabled(mode=="train"):
+            outputs = model(inputs)
+            loss = criterion(outputs,labels)
+            
+            if mode == "train":
+                loss.backward()
+                optimizer.step()
+                
         
-        #TODO: y_ored debug
-        if index == 0:
-            y_true = labels_cpu.numpy()
-            y_pred = torch.nn.functional.softmax(outputs, dim=1).detach().cpu().numpy()
-        else:
-            y_true = np.concatenate((y_true,labels_cpu.numpy()))
-            y_pred = np.concatenate((y_pred,torch.nn.functional.softmax(outputs, dim=1).detach().cpu().numpy()))
+        cumulative_loss += loss.item() * inputs.size(0)
 
-    #debug
-    f1 = metrics.f1_score(y_true, y_pred)
+        if index == 0:
+            _,true = torch.max(labels,1)
+            y_true = true.detach().cpu().numpy()
+            _,pred = torch.max(outputs,1)
+            y_pred = pred.detach().cpu().numpy()
+            
+        else:
+            _,true = torch.max(labels,1)
+            _,pred = torch.max(outputs,1)
+            y_true = np.concatenate((y_true,true.detach().cpu().numpy()))
+            y_pred = np.concatenate((y_pred,pred.detach().cpu().numpy()))
+        
+    f1 = metrics.f1_score(y_true, y_pred,average="micro")
 
     cumulative_loss /= len(data_loader.dataset)
 
-    class_report = metrics.classification_report(y_true,y_pred, target_names = CELL_TYPES)
+    class_report = metrics.classification_report(y_true,y_pred,target_names = CELL_TYPES)
 
     return f1,cumulative_loss,model,optimizer,class_report
 
 
-def logging(mode,writer,log,epoch,f1,loss):
+def logging(mode,iter,log,epoch,f1,loss):
     log(f"Epoche {epoch} {mode}: (loss {loss:.4f}, F1 {f1:.4f})")
+    # mlflow.log_param("iter",iter)
+    # mlflow.log_param("epoch", epoch)
+    # mlflow.log_param("mode", mode)
+    # mlflow.log_metric("loss",loss)
+    # mlflow.log_metric("f1",f1)
 
-    if writer:
-        writer.add_scalar(f"{mode}/Loss", loss, epoch)
-        writer.add_scalar(f"{mode}/F1", f1, epoch)
-    
 
 def generate_psudo_label(net, dataloader,device):
     
+    net.to(device)
     net.eval()
     result = {}
-    for cell_id,img,label in dataloader:
+    for index,(cell_id,img,label) in enumerate(dataloader):
         with torch.no_grad():
+            outputs = net(img.to(device))
             #TODO: debug
-            output = torch.nn.functional.softmax(net([img.to(device)])).tolist()
-            # cell_anno = torch.round(torch.nn.ReLU()(output)).detach().cpu().numpy()
-            print(output)
-            result[cell_id] = output
+            _,pred = torch.max(outputs,1)
+            for i in range(len(cell_id)):
+                result[cell_id[i].item()]=pred[i].item()
     return result
 
-def one_iteration(args, model, ITER, IMG_SIZE, phase='student'):
-
-    NUM_TYPES = 13
+def one_iteration(args, model, ITER, IMG_SIZE, test_loader, val_loader,phase='student'):
+    
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     
     ## make output directory
@@ -107,21 +114,19 @@ def one_iteration(args, model, ITER, IMG_SIZE, phase='student'):
     log("Used parameters...")
     for arg in sorted(vars(args)):
         log("\t" + str(arg) + " : " + str(getattr(args, arg)))
+        #mlflow.log_param(str(arg), getattr(args, arg))
 
     args_dict = {}
     for arg in vars(args):
         args_dict[str(arg)] = getattr(args, arg)
         
-    ## tensorboard writer 
-    writer = SummaryWriter(log_dir=output_path)
-    writer.add_text("Args", str(args_dict), global_step=0)
 
     ## DataLoader
-    test_loader,val_loader = data.prepare_test_val_loader(args,IMG_SIZE)
     train_loader = data.prepare_train_loader(args, IMG_SIZE, phase=phase)
 
     ## Model
     model.to(device)
+    
 
     ## Loss function
     criterion = torch.nn.CrossEntropyLoss()
@@ -148,13 +153,13 @@ def one_iteration(args, model, ITER, IMG_SIZE, phase='student'):
     for epoch in range(1,args.epochs+1):
 
         ## training
-        f1_train,loss_train,model,optimizer = forward_data(train_loader,"train",model,optimizer,criterion,device)
-        logging("train",ITER,writer,log,epoch,f1_train,loss_train)
+        f1_train,loss_train,model,optimizer, class_report = forward_data(train_loader,"train",model,optimizer,criterion,device)
+        logging("train",ITER,log,epoch,f1_train,loss_train)
 
         with torch.no_grad():
             ##Validation
-            f1_val,loss_val,model,optimizer = forward_data(val_loader,"val",model,optimizer,criterion,device)
-            logging("val",ITER,writer,log,epoch,f1_val,loss_val)
+            f1_val,loss_val,model,optimizer, class_report = forward_data(val_loader,"val",model,optimizer,criterion,device)
+            logging("val",ITER,log,epoch,f1_val,loss_val)
         
         ## save Checkpoint
         if epoch % 10 == 0 or epoch == args.epochs:
@@ -164,9 +169,10 @@ def one_iteration(args, model, ITER, IMG_SIZE, phase='student'):
                                  'args': args_dict,
                                  }
 
-            model_path = os.path.join(args.output_path,f"checkpoint.pth.tar")
+            model_path = os.path.join(output_path,f"checkpoint.pth.tar")
             torch.save(current_state,model_path)
             log(f"Saved checkpoint to: {model_path}")
+        
 
         ### save best model on validation set
         if epoch  > 10 and f1_val > best_f1:
@@ -179,49 +185,68 @@ def one_iteration(args, model, ITER, IMG_SIZE, phase='student'):
                                  'args': args_dict,
                                  'f1_val': f1_val,
                                  }
-            model_path = os.path.join(args.output_path,f"model_best_f1.pth.tar")
+            model_path = os.path.join(output_path,f"model_best_f1.pth.tar")
             torch.save(current_state,model_path)
             log(f"Saved Model with best Validation F1 to: {model_path}")
-
+            
     ## test model
     log("Testing best Validation Model")
     with torch.no_grad():
         model.load_state_dict(torch.load(model_path)['model_weights'])
-        f1_test,loss_test,model,optimizer,class_report = forward_data(test_loader,"test",model,optimizer,torch.nn.MSELoss(),args,device)
+        f1_test,loss_test,model,optimizer,class_report = forward_data(test_loader,"test",model,optimizer,criterion,device)
         log(f"Test: (loss {loss_test:.4f}, F1 {f1_test:.4f})")
         log(f"Classification Report:{class_report}")
+        # mlflow.log_metric("loss",loss_test)
+        # for class_name, metrics in class_report.items():
+        #     for metric_name, metric_value in metrics.items():
+        #         name= class_name+metric_name
+        #         mlflow.log_metric(name, metric_value)
 
     #generate psudo labels
     log("Generating psudo labels")
     to_predict_loader = data.prepare_train_loader(args, IMG_SIZE, psudo_labeled=True)
-    result = generate_psudo_label(teacher_model, to_predict_loader,device)
+    model.load_state_dict(torch.load(model_path)['model_weights'])
+    result = generate_psudo_label(model, to_predict_loader,device)
     data.append_psudo_label(result, ITER)
     log(f"Generation done. See the file: {ITER}")
 
-    del test_loader, val_loader,train_loader,to_predict_loader,teacher_model
+    del train_loader,to_predict_loader, model
 
     log_file.close()
-    writer.flush()
-    writer.close()
 
 def main(args):
+    num_classes=18
+    weight = EfficientNet_B0_Weights.DEFAULT
+    
+    #mlflow.set_tracking_uri("http://mlflow.172.26.62.216.nip.io")
+    #mlflow.start_run()
+    
+    test_loader,val_loader = data.prepare_test_val_loader(args,args.img_size)
+    
+    teacher_model = efficientnet_b0(weights=weight)
+    num_fts = teacher_model.classifier[1].in_features
+    teacher_model.classifier[1] = torch.nn.Linear(in_features=num_fts, out_features=num_classes,bias=True)
+    one_iteration(args, teacher_model,"iter_1",args.img_size, test_loader,val_loader, phase="first teacher")
 
+    parser.set_defaults(psudo_labels_csv="iter_1.csv")
+    parser.set_defaults(num_psudo_labels=30000)
 
-    #train and test first teacher (baseline)
+    student_model_1 = efficientnet_b0(weights=weight, stochastic_depth_prob=args.stoch_depth_prob)
+    num_fts = student_model_1.classifier[1].in_features
+    student_model_1.classifier[0] = torch.nn.Dropout(p=args.drop_out_prob, inplace = True)
+    student_model_1.classifier[1] = torch.nn.Linear(in_features=num_fts, out_features=num_classes, bias=True)
+    one_iteration(args, student_model_1,"iter_2",args.img_size, test_loader,val_loader)
+    
+    parser.set_defaults(psudo_labels_csv="iter_2.csv")
+    
+    student_model_2 = efficientnet_b0(weights=weight, stochastic_depth_prob=args.stoch_depth_prob)
+    num_fts = student_model_2.classifier[1].in_features
+    student_model_2.classifier[0] = torch.nn.Dropout(p=args.drop_out_prob, inplace = True)
+    student_model_2.classifier[1] = torch.nn.Linear(in_features=num_fts, out_features=num_classes, bias=True)
+    one_iteration(args, student_model_2,"iter_3",args.img_size, test_loader,val_loader)
 
-    teacher_model = efficientnet_b0(pretrained=True, num_classes=13)
-    one_iteration(args, teacher_model,"iter_1",224, phase="first teacher")
+    #mlflow.end_run()
 
-
-    #train student
-
-    student_model = efficientnet_b7(pretrained=True, dropout=0.5, stochastic_depth_prob=0.3,num_classes=13)
-    one_iteration(args, student_model,"iter_2",600)
-
-    #train student
-
-    student_model = efficientnet_b7(pretrained=True, dropout=0.5, stochastic_depth_prob=0.3,num_classes=13)
-    one_iteration(args, student_model,"iter_3",600)
         
 
 if __name__ == "__main__":
