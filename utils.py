@@ -1,34 +1,44 @@
 import torch
 from data import DataPreparation
-import os
-import numpy as np
-import random
-from sys import stderr
-import sklearn.metrics as metrics
-import torch.nn as nn
 import torchvision
 from abc import ABC, abstractmethod
 
-class ModelContainerInterface(ABC):
-    @abstractmethod
-    def __init__(self,model_name,dataset:DataPreparation) -> None:
-        self.model_name = model_name
-        self.dataset = dataset
+# class e0Model:
+#     def __init__(self,dataset:DataPreparation,phase) -> None:
+#         #self.model = None
+#         self.dataset = dataset
+#         self.phase = phase
+#         self.create_model()
+        
+#     def create_model(self):
+#         if self.phase == 'first teacher':
+#             self.model = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT)
+#         else:
+#             self.model = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT, stochastic_depth_prob=self.dataset.args.stoch_depth_prob)
+#             self.model.classifier[0] = torch.nn.Dropout(p=self.dataset.args.drop_out_rate, inplace = True)
 
+#         num_fts = self.model.classifier[1].in_features
+#         self.model.classifier[1] = torch.nn.Linear(in_features=num_fts, out_features=len(self.dataset.CELL_TYPES), bias=True)
 
-    def create_first_teacher(self):
-        self.model = torchvision.models.get_model(self.model_name)
-
-    def create_student(self):
-        pass
 
 class ModelContainer:
     def __init__(self, dataset:DataPreparation) -> None:
         self.dataset = dataset
-        self.model = torchvision.models.detection.__dict__[self.dataset.args.model_name](pretrained=True)
 
     def create_first_teacher(self):
-        self.model = torchvision.models.get_model(self.model_name)
+        self.model = torchvision.models.get_model(self.dataset.args.model_name,weights="DEFAULT")
+        #self.model = torchvision.models.__dict__[self.dataset.args.model_name](pretrained=True)
+        #weights = torchvision.models.get_weight
+        num_fts = self.model.classifier[1].in_features
+        self.model.classifier[1] = torch.nn.Linear(in_features=num_fts, out_features=len(self.dataset.CELL_TYPES), bias=True)
+
+    def create_student(self):
+        self.model = torchvision.models.get_model(self.dataset.args.model_name,weights="DEFAULT",stochastic_depth_prob=self.dataset.args.stoch_depth_prob)
+        #self.model = torchvision.models.__dict__[self.dataset.args.model_name](pretrained=True, stochastic_depth_prob=self.dataset.args.stoch_depth_prob)
+        self.model.classifier[0] = torch.nn.Dropout(p=self.dataset.args.drop_out_rate, inplace = True)
+        num_fts = self.model.classifier[1].in_features
+        self.model.classifier[1] = torch.nn.Linear(in_features=num_fts, out_features=len(self.dataset.CELL_TYPES), bias=True)
+
 
 
 class MetricsManagerInterface(ABC):
@@ -39,7 +49,7 @@ class MetricsManagerInterface(ABC):
 
 
     @abstractmethod
-    def eval(self, y_true, y_pred, labels=[]) -> dict:
+    def evaluate(self, y_true, y_pred, labels=[]) -> dict:
         pass
 
     @abstractmethod
@@ -60,27 +70,4 @@ class MetricsManagerInterface(ABC):
 
     #     return best, result
 
-class myMetric(MetricsManagerInterface):
-    def __init__(self) -> None:
-        super().__init__()
 
-    def benchmark(self, y_true, y_pred, labels=[]):
-        pa=metrics.accuracy_score(y_true,y_pred)
-        p2=metrics.accuracy_score(y_true,y_pred)
-        return pa,p2
-
-    
-    def eval(self, y_true, y_pred, labels=[]):
-        f1=metrics.f1_score(y_true,y_pred,labels=labels,average='micro')
-        prc=metrics.recall_score(y_true,y_pred,labels=labels,average = 'micro')
-        result = {'f1 score':f1, 'prc':prc}
-        return result
-
-
-y_true = [1,1,2,0,3]
-y_pred = [3,1,2,2,3]
-label = ['a','b','c','d']
-manager = myMetric()
-r = manager.eval(torch.Tensor(y_true), torch.Tensor(y_pred))
-b = manager.benchmark(torch.Tensor(y_true), torch.Tensor(y_pred))
-print(b,r)

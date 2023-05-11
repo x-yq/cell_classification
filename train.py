@@ -6,32 +6,13 @@ import random
 from sys import stderr
 import datetime
 import time
-from utils import MetricsManagerInterface
+from utils import MetricsManagerInterface, ModelContainer
 import torch.nn
-from torchvision.models import efficientnet_b0,EfficientNet_B0_Weights
-
-
-
-class e0Model:
-    def __init__(self,dataset:DataPreparation,phase) -> None:
-        #self.model = None
-        self.dataset = dataset
-        self.phase = phase
-        self.create_model()
-        
-    def create_model(self):
-        if self.phase == 'first teacher':
-            self.model = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT)
-        else:
-            self.model = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT, stochastic_depth_prob=self.dataset.args.stoch_depth_prob)
-            self.model.classifier[0] = torch.nn.Dropout(p=self.dataset.args.drop_out_rate, inplace = True)
-
-        num_fts = self.model.classifier[1].in_features
-        self.model.classifier[1] = torch.nn.Linear(in_features=num_fts, out_features=len(self.dataset.CELL_TYPES), bias=True)
-
+#from torchvision.models import efficientnet_b0,EfficientNet_B0_Weights
+  
 
 class Trainer:
-    def __init__(self, model_container:e0Model, iter, dataset:DataPreparation,metrics_container:MetricsManagerInterface, phase = 'student'):
+    def __init__(self, model_container:ModelContainer, iter, dataset:DataPreparation,metrics_container:MetricsManagerInterface, phase = 'student'):
         self.model_container = model_container
         self.iter = iter
         self.dataset = dataset
@@ -115,7 +96,7 @@ class Trainer:
                 y_pred = np.concatenate((y_pred,pred.detach().cpu().numpy()))
 
         cumulative_loss /= len(data_loader.dataset)
-        report = self.metrics_container.eval(y_true, y_pred,labels=self.dataset.CELL_TYPES)
+        report = self.metrics_container.evaluate(y_true, y_pred,labels=self.dataset.CELL_TYPES)
         benchmark = self.metrics_container.benchmark(y_true, y_pred,labels=self.dataset.CELL_TYPES)
 
         # f1 = metrics.f1_score(y_true, y_pred,average="micro")
@@ -125,15 +106,15 @@ class Trainer:
         #return f1,cumulative_loss,acc,class_report
         return cumulative_loss,benchmark,report
 
-    def logging(self,mode,epoch,f1,loss,acc):
-        self.log(f"Epoche {epoch} {mode}: (loss {loss:.4f}, F1 {f1:.4f}, acc {acc:.4f})")
+    def logging(self,mode,epoch,f1,loss):
+        self.log(f"Epoche {epoch} {mode}: (loss {loss:.4f}, F1 {f1:.4f})")
         # mlflow.log_param("iter",self.iter)
         # mlflow.log_param("epoch", epoch)
         # mlflow.log_param("mode", mode)
         # mlflow.log_metric("loss",loss)
         # mlflow.log_metric("f1",f1)
 
-    def generate_psudo_label(self,net,dataloader):
+    def generate_pseudo_label(self,net,dataloader):
     
         net.to(self.device)
         net.eval()
@@ -213,23 +194,26 @@ class Trainer:
             self.model_container.model.load_state_dict(torch.load(path)['model_weights'])
             loss_test,bench_test,report_test = self.forward_data("test",self.dataset.test_loader)
             self.log(f"Test: (loss {loss_test:.4f}, Benchmark {bench_test:.4f})")
-            self.log(f"Other Report:{report_test}")
+            for key, value in report_test.items():
+                self.log(f"{key}: {value}")
+            
+            #self.log(f"Other Report:{report_test}")
             # mlflow.log_metric("loss",loss_test)
             # for class_name, metrics in class_report.items():
             #     for metric_name, metric_value in metrics.items():
             #         name= class_name+metric_name
             #         mlflow.log_metric(name, metric_value)
 
-        ## generate psudo labels
+        ## generate pseudo labels
         self.log("--------------------------------------------------------------------------")
-        self.log("Generating psudo labels...")
-        to_predict_loader = self.dataset.prepare_train_loader(psudo_labeled=True)
+        self.log("Generating pseudo labels...")
+        to_predict_loader = self.dataset.prepare_train_loader(pseudo_labeled=True)
         #path = os.path.join(f"/home/h1/yexu660b/project/results_new/bestAfterOld/20230412-153040_new_dataset_iter_0/",f"model_best_f1.pth.tar")
         path = os.path.join(self.output_path,f"model_best_bench.pth.tar")
         self.model_container.model.load_state_dict(torch.load(path)['model_weights'])
-        result = self.generate_psudo_label(self.model_container.model, to_predict_loader)
-        self.dataset.append_pseudo_label(result, self.iter, self.dataset.labels_path)
-        self.log(f"Generation done. See the file: {self.dataset.labels_path}_{self.iter}. Totally {self.dataset.args.num_psudo_labels} labels generated")
+        result = self.generate_pseudo_label(self.model_container.model, to_predict_loader)
+        self.dataset.append_pseudo_label(result, self.iter)
+        self.log(f"Generation done. See the file: {self.dataset.labels_path}_{self.iter}. Totally {self.dataset.args.num_pseudo_labels} labels generated")
         del train_loader,to_predict_loader
         self.log_file.close()
 
@@ -299,7 +283,7 @@ class Trainer:
 #     # mlflow.log_metric("f1",f1)
 
 
-# def generate_psudo_label(net, dataloader,device):
+# def generate_pseudo_label(net, dataloader,device):
     
 #     net.to(device)
 #     net.eval()
@@ -334,7 +318,7 @@ class Trainer:
 #         log_file.flush()
 #         os.fsync(log_file)
     
-#     log('Output psudo labels directory: ' + labels_path)
+#     log('Output pseudo labels directory: ' + labels_path)
 #     log('Output directory: ' + output_path)
 
 #     log("Used parameters...")
@@ -421,16 +405,16 @@ class Trainer:
 #         #         name= class_name+metric_name
 #         #         mlflow.log_metric(name, metric_value)
 
-#     ## generate psudo labels
+#     ## generate pseudo labels
 #     log("--------------------------------------------------------------------------")
-#     log("Generating psudo labels...")
-#     to_predict_loader = prepare_data.prepare_train_loader(args, IMG_SIZE, psudo_labeled=True)
+#     log("Generating pseudo labels...")
+#     to_predict_loader = prepare_data.prepare_train_loader(args, IMG_SIZE, pseudo_labeled=True)
 #     #path = os.path.join(f"/home/h1/yexu660b/project/results_new/bestAfterOld/20230412-153040_new_dataset_iter_0/",f"model_best_f1.pth.tar")
 #     path = os.path.join(output_path,f"model_best_f1.pth.tar")
 #     model.load_state_dict(torch.load(path)['model_weights'])
-#     result = generate_psudo_label(model, to_predict_loader,device)
+#     result = generate_pseudo_label(model, to_predict_loader,device)
 #     prepare_data.append_pseudo_label(result, ITER, labels_path)
-#     log(f"Generation done. See the file: {labels_path}_{ITER}. Totally {args.num_psudo_labels} labels generated")
+#     log(f"Generation done. See the file: {labels_path}_{ITER}. Totally {args.num_pseudo_labels} labels generated")
 
 #     del train_loader,to_predict_loader, model
 
