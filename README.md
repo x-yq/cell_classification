@@ -1,6 +1,6 @@
 # cell_classification
 
-1. This version of the code is subject to the external dataset. For training with internal dataset, it need some reconstruction of csv file for them in following format:
+1. This version of the code is subject to the external dataset. For training with internal dataset, it needs to change the num_labeled_train in the main.py and need a reconstruction of csv file for internal dataset in following format:
 
 ImageId ParentFolderOfTheImage Labels...
 
