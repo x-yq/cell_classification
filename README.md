@@ -8,11 +8,11 @@ The example could be seen in the csv file labeled_new_modified.csv
 
 2. The required parameters are:
 
---trial_name \n
---output_folder \n
---model_name \n
---labeled_anno_file \n
---unlabeled_anno_file \n
+--trial_name 
+--output_folder 
+--model_name 
+--labeled_anno_file 
+--unlabeled_anno_file 
 --image_folder
 
  The runing example could be seen in the run.sh
