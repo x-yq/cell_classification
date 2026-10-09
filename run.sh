@@ -1,10 +1,9 @@
 python3 main.py --trial_name testing \
---output_folder /home/h1/yexu660b/project/results_new/testing/ \
+--output_folder /path/to/results/ \
 --model_name "efficientnet_b0" \
---labeled_anno_file "/home/h1/yexu660b/project/labeled_new_modified.csv" \
---unlabeled_anno_file "/home/h1/yexu660b/project/unlabeled_new_modified.csv" \
---image_folder "/lustre/scratch2/ws/1/s7740678-data_07/raw/BM_cytomorphology_data/" \
+--labeled_anno_file "/path/to/labeled_new_modified.csv" \
+--unlabeled_anno_file "/path/to/unlabeled_new_modified.csv" \
+--image_folder "/path/to/data" \
 --threshold 250 \
---ratio_label_unlabel "1:1:3" \
 --stoch_depth_prob 0.3 \
 --drop_out_rate 0.9
